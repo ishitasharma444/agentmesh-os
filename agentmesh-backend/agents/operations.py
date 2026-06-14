@@ -1,53 +1,136 @@
-#%%
-from dotenv import load_dotenv
-load_dotenv()
-from crewai import LLM,Agent,Task,Crew
-llm2=LLM(
-    model="gemini/gemini-2.5-flash",
-    temperature=0.5
-)
-transport_agent=Agent(
-    role="Transportation Optimization and Resource Allocation Agent,",
-    goal="Analyze shipment characteristics and operational conditions to determine the most efficient, cost-effective, safe, and environmentally responsible transportation strategy while ensuring timely delivery and optimal resource utilization.",
-    backstory="""The Transportation Optimization Agent serves as the execution planning layer within the AgentMesh ecosystem. Modern logistics operations require more than simply selecting a route or assigning a vehicle. Every shipment has unique characteristics including weight, volume, quantity, urgency, handling requirements, and demand conditions.
-
-The Transportation Optimization Agent evaluates shipment attributes, available transportation modes, operational constraints, fuel consumption patterns, safety considerations, delivery requirements, and resource availability to determine the most suitable transportation strategy.
-
-The agent continuously balances multiple objectives including delivery speed, transportation safety, fuel efficiency, operational cost, resource utilization, and environmental impact. It collaborates with Logistics, Finance, and Risk Agents to ensure that every shipment is transported using the most appropriate mode while maintaining organizational efficiency and reliability.
-
-Its objective is to optimize transportation decisions by intelligently matching shipment requirements with available transportation resources and operational conditions.""",
-    verbose=    False,
-    llm=llm2
-)
-trans_task=Task(
-    description="Evaluate shipment requirements and operational conditions to identify the optimal transportation strategy. Analyze cargo weight, volume, quantity, urgency, demand patterns, safety requirements, fuel efficiency, and resource availability to recommend the most efficient and sustainable transportation solution.",
-    agent=transport_agent,
-    expected_output="""Transportation Optimization Report
-
-                        1. Recommended Transportation Mode
-                        2. Recommended Vehicle Type
-                        3. Capacity Utilization Analysis
-                        4. Fuel Efficiency Assessment
-                        5. Safety Assessment
-                        6. Cost Efficiency Analysis
-                        7. Resource Allocation Plan
-                        8. Environmental Impact Assessment
-                        9. Confidence Score
-                        10. Final Transportation Recommendation""",
-    verbose=False
-)
+import json
 
 
-import asyncio
+def run(shared_state: dict, custom_input: str = None) -> dict:
+    """
+    Runs Operations/Transportation Agent using the latest state.
+    Returns a structured execution plan.
+    """
 
-async def main():
+    goal = shared_state.get(
+        "company_goal",
+        "Complete delivery safely within budget"
+    )
+    route = shared_state.get("route", "not selected")
+    route_risk = shared_state.get(
+        "route_risk",
+        "unknown"
+    )
+    warehouse = shared_state.get(
+        "warehouse_status",
+        "unknown"
+    )
+    deadline = shared_state.get("deadline", "Friday")
+    units = shared_state.get("units_to_deliver", 500)
+    budget = shared_state.get("budget", 200000)
+    budget_used = shared_state.get("budget_used", 0)
+    current_plan = shared_state.get(
+        "current_plan",
+        "not generated"
+    )
+
+    description = f"""
+You are the Operations Agent working inside AgentMesh OS.
+
+SHARED ORGANIZATIONAL STATE:
+
+Company Goal: {goal}
+Selected Route: {route}
+Route Risk: {route_risk}
+Warehouse: {warehouse}
+Units to Deliver: {units}
+Deadline: {deadline}
+Total Budget: {budget}
+Budget Used: {budget_used}
+Remaining Budget: {budget - budget_used}
+Current Plan: {current_plan}
+
+Additional User Instruction:
+{custom_input or "No additional instruction"}
+
+Create an executable transportation and resource plan.
+
+You must:
+1. Select the transportation mode.
+2. Select the appropriate vehicle type.
+3. Calculate the number of vehicles required.
+4. Estimate capacity utilization.
+5. Create dispatch and arrival timings.
+6. Provide a resource allocation plan.
+7. Indicate operational readiness.
+8. Give a confidence score from 0.0 to 1.0.
+9. Give a final operations recommendation.
+
+Respond ONLY in valid JSON using this exact structure:
+
+{{
+    "agent": "operations",
+    "recommendation": "execution recommendation",
+    "confidence": 0.0,
+    "reasoning": "operations reasoning",
+    "transport_mode": "road",
+    "vehicle_type": "truck type",
+    "vehicles_required": 0,
+    "capacity_utilization": 0,
+    "execution_timeline": {{
+        "dispatch": "time",
+        "arrival": "time"
+    }},
+    "resource_plan": [],
+    "operational_status": "ready"
+}}
+"""
+
+    dynamic_task = Task(
+        description=description,
+        expected_output="Valid JSON operations plan",
+        agent=transport_agent
+    )
+
     crew = Crew(
         agents=[transport_agent],
-        tasks=[trans_task],
+        tasks=[dynamic_task],
         verbose=False
     )
-    result = await crew.kickoff_async()
-    print(result)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    result = crew.kickoff()
+    raw_output = str(result).strip()
+
+    if "```" in raw_output:
+        raw_output = raw_output.split("```")[1]
+
+        if raw_output.startswith("json"):
+            raw_output = raw_output[4:]
+
+        raw_output = (
+            raw_output
+            .strip()
+            .rstrip("```")
+            .strip()
+        )
+
+    try:
+        parsed_output = json.loads(raw_output)
+        parsed_output["agent"] = "operations"
+        return parsed_output
+
+    except (json.JSONDecodeError, TypeError):
+        return {
+            "agent": "operations",
+            "recommendation": raw_output[:300],
+            "confidence": 0.5,
+            "reasoning": (
+                "Operations Agent returned an output "
+                "that could not be parsed as JSON."
+            ),
+            "transport_mode": "unknown",
+            "vehicle_type": "unknown",
+            "vehicles_required": 0,
+            "capacity_utilization": 0,
+            "execution_timeline": {
+                "dispatch": "unknown",
+                "arrival": "unknown"
+            },
+            "resource_plan": [],
+            "operational_status": "review"
+        }
