@@ -11,12 +11,11 @@ model = genai.GenerativeModel("gemini-1.5-flash")
 def detect_conflict(agent_outputs: dict) -> dict:
     """
     AgentMesh Conflict Detector — checks if agents are recommending opposite things.
-    Example: Finance says Route B (cheap), Risk says Route A (safe) — that's a conflict.
     """
 
     agents = list(agent_outputs.keys())
     recommendations = {
-        name: data["output"].get("recommendation", "") 
+        name: data["output"].get("recommendation", "")
         for name, data in agent_outputs.items()
     }
 
@@ -60,30 +59,49 @@ Respond ONLY in this exact JSON format, nothing else:
 
 def arbitrate(agent_outputs: dict, shared_state: dict) -> dict:
     """
-    AgentMesh Arbitration Engine — when conflict detected, picks a winner.
-    Uses company goal as the deciding factor — not just agent confidence.
-    Full reasoning is logged so judges can see HOW the decision was made.
+    AgentMesh Arbitration Engine — picks winner + gives confidence score + full reasoning.
+    Confidence = how sure is the system about this decision.
     """
 
+    # Calculate individual agent confidences first
+    agent_confidences = {
+        name: data["output"].get("confidence", 0.5)
+        for name, data in agent_outputs.items()
+    }
+
     prompt = f"""
-You are the AgentMesh Arbitration Engine. Multiple AI agents disagree. You must pick a winner based on the company goal.
+You are the AgentMesh Arbitration Engine. Multiple AI agents disagree. You must pick a winner based on the company goal and assign a confidence score to your decision.
 
 COMPANY GOAL: {shared_state.get('company_goal')}
 BUDGET: {shared_state.get('budget')}
 BUDGET USED: {shared_state.get('budget_used')}
 ROUTE RISK: {shared_state.get('route_risk')}
 
-ALL AGENT OUTPUTS:
-{json.dumps({name: data["output"] for name, data in agent_outputs.items()}, indent=2)}
+ALL AGENT OUTPUTS WITH THEIR CONFIDENCE SCORES:
+{json.dumps({name: {
+    "output": data["output"],
+    "agent_confidence": agent_confidences[name]
+} for name, data in agent_outputs.items()}, indent=2)}
 
-Pick the agent whose recommendation best serves the company goal. Consider budget, risk, and deadline together.
+Pick the agent whose recommendation best serves the company goal.
+Also give YOUR confidence in this arbitration decision (0.0 to 1.0):
+- High confidence (>0.8) = clear winner, strong reasoning
+- Medium confidence (0.5-0.8) = winner exists but tradeoffs are significant  
+- Low confidence (<0.5) = very hard call, could go either way
 
 Respond ONLY in this exact JSON format, nothing else:
 {{
     "winner": "agent_name",
     "decision": "what should be done",
     "reasoning": "why this agent won over others",
-    "tradeoffs": "what we are sacrificing by not picking the others"
+    "tradeoffs": "what we are sacrificing by not picking the others",
+    "arbitration_confidence": 0.0 to 1.0,
+    "confidence_explanation": "why you are this confident in the arbitration decision",
+    "agent_confidence_summary": {{
+        "highest_confidence_agent": "agent_name",
+        "lowest_confidence_agent": "agent_name",
+        "average_confidence": 0.0 to 1.0
+    }}
 }}
 """
 
@@ -96,12 +114,21 @@ Respond ONLY in this exact JSON format, nothing else:
             if text.startswith("json"):
                 text = text[4:]
 
-        return json.loads(text.strip())
+        result = json.loads(text.strip())
+
+        # Add raw agent confidences to result for dashboard
+        result["individual_agent_confidences"] = agent_confidences
+
+        return result
 
     except Exception as e:
         return {
             "winner": "unknown",
             "decision": "arbitration failed",
             "reasoning": str(e),
-            "tradeoffs": "none"
+            "tradeoffs": "none",
+            "arbitration_confidence": 0.0,
+            "confidence_explanation": "arbitration engine error",
+            "agent_confidence_summary": {},
+            "individual_agent_confidences": agent_confidences
         }
